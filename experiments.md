@@ -1,0 +1,3 @@
+Baselines
+CPU 22.5244 83.5147
+Naive all-CUDA 0.195648 1.52426 msec

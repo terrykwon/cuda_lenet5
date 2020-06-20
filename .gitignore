@@ -1,0 +1,8 @@
+hello_cpu
+hello_cuda
+predict
+
+tmp/
+build/
+data/
+result/
