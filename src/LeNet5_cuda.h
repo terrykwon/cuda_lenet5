@@ -3,6 +3,11 @@
 
 #include "LeNet5.h"
 
+__constant__ float d_conv1_weight[3*6*5*5];   // [3][6][5][5];
+__constant__ float d_conv2_weight[6*16*5*5];   // [6][16][5][5];
+__constant__ float d_conv1_bias[6];     // [6];
+__constant__ float d_conv2_bias[16];     // [16];
+
 class LeNet5_cuda : public LeNet5
 {
 public:
@@ -22,10 +27,6 @@ private:
     //////////////////////////////////////////////////
     //Device Weights 
     //////////////////////////////////////////////////
-    float* d_conv1_weight;   // [3][6][5][5];
-    float* d_conv2_weight;   // [6][16][5][5];
-    float* d_conv1_bias;     // [6];
-    float* d_conv2_bias;     // [16];
     float* d_fc1_weight;     // [400][120];
     float* d_fc2_weight;     // [120][84];
     float* d_fc3_weight;     // [84][10];

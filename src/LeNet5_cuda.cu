@@ -34,6 +34,21 @@
 //   d_P[Row*Width + Col] = Pvalue;
 // }
 
+
+/**
+ * Wrapper to catch CUDA errors.
+ * For debugging only.
+ */
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
 LeNet5_cuda::LeNet5_cuda(int batch) : LeNet5(batch) {
   this->f_conv1_weight = new float[conv1_in_channel * conv1_out_channel *
                                   conv1_kernel_size * conv1_kernel_size];
@@ -49,41 +64,65 @@ LeNet5_cuda::LeNet5_cuda(int batch) : LeNet5(batch) {
   this->f_fc3_bias = new float[fc3_out_channel];
 
   // Activation
-  // this->f_input = new float[batch * input_channel * input_size * input_size];
-  // this->f_C1_feature_map = new float[batch * C1_channel * C1_size * C1_size];
-  // this->f_S2_feature_map = new float[batch * S2_channel * S2_size * S2_size];
-  // this->f_C3_feature_map = new float[batch * C3_channel * C3_size * C3_size];
-  // this->f_S4_feature_map = new float[batch * S4_channel * S4_size * S4_size];
-  // this->f_C5_layer = new float[batch * C5_size];
-  // this->f_F6_layer = new float[batch * F6_size];
   this->f_output = new float[batch * output_size];
-
-
-  // std::copy(this->input,
-  //           this->input+batch*input_channel*input_size*input_size,
-  //           this->f_input);
-  // std::copy(this->C1_feature_map,
-  //           this->input+batch*C1_channel*C1_size*C1_size,
-  //           this->f_C1_feature_map);
-  // std::copy(this->S2_feature_map,
-  //           this->input+batch*S2_channel*S2_size*S2_size,
-  //           this->f_S2_feature_map);
-  // std::copy(this->C3_feature_map,
-  //           this->input+batch*C3_channel*C3_size*C3_size,
-  //           this->f_C3_feature_map);
-  // std::copy(this->S4_feature_map,
-  //           this->input+batch*S4_channel*S4_size*S4_size,
-  //           this->f_S4_feature_map);
-  // std::copy(this->C5_feature_map,
-  //           this->input+batch*C5_size,
-  //           this->f_C5_feature_map);
-  // std::copy(this->F6_feature_map,
-  //           this->input+batch*F6_size,
-  //           this->f_F6_feature_map);
-  // std::copy(this->output,
-  //           this->output*output_size,
-  //           this->f_output);
 }
+
+__global__ void conv1(float* input, float* output,
+                      int B, int H, int W, int IC, int OC,
+                      int K) {
+  int H_OUT = H - (K - 1); // output dimensions
+  int W_OUT = W - (K - 1);
+
+  int b = blockIdx.x; // batch
+  int oc = blockIdx.y; // output channel
+  int w = threadIdx.x; // col
+  int h = threadIdx.y; // row
+
+  // Convolution
+  int output_index =
+      b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
+  output[output_index] = d_conv1_bias[oc];
+  for (int ic = 0; ic < IC; ic++) {
+    int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
+    int kernel_base = oc * (IC * K * K) + ic * (K * K);
+    for (int kh = 0; kh < K; kh++) {
+      for (int kw = 0; kw < K; kw++) {
+        float val = input[input_base + kh * (W) + kw] *
+                      d_conv1_weight[kernel_base + kh * (K) + kw];
+        output[output_index] += val;
+      }
+    }
+  }
+}
+
+__global__ void conv2(float* input, float* output,
+                      int B, int H, int W, int IC, int OC,
+                      int K) {
+  int H_OUT = H - (K - 1); // output dimensions
+  int W_OUT = W - (K - 1);
+
+  int b = blockIdx.x; // batch
+  int oc = blockIdx.y; // output channel
+  int w = threadIdx.x; // col
+  int h = threadIdx.y; // row
+
+  // Convolution
+  int output_index =
+      b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
+  output[output_index] = d_conv2_bias[oc];
+  for (int ic = 0; ic < IC; ic++) {
+    int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
+    int kernel_base = oc * (IC * K * K) + ic * (K * K);
+    for (int kh = 0; kh < K; kh++) {
+      for (int kw = 0; kw < K; kw++) {
+        float val = input[input_base + kh * (W) + kw] *
+                      d_conv2_weight[kernel_base + kh * (K) + kw];
+        output[output_index] += val;
+      }
+    }
+  }
+}
+
 
 /**
  * (batch_size, 3, 1) x (32, 32, 1)
@@ -223,7 +262,7 @@ void LeNet5_cuda::predict(int batch) {
   //      input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
   dim3 conv1GridDim(batch, 6, 1);
   dim3 conv1BlockDim(28, 28, 1);
-  naive_conv<<<conv1GridDim, conv1BlockDim>>>(d_input, d_C1_feature_map, d_conv1_weight, d_conv1_bias, batch, input_size,
+  conv1<<<conv1GridDim, conv1BlockDim>>>(d_input, d_C1_feature_map, batch, input_size,
                                               input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
 
   // cudaMemcpy(C1_feature_map, d_C1_feature_map, sizeof(float)*batch*conv1_out_channel*C1_size*C1_size, cudaMemcpyDeviceToHost);
@@ -246,8 +285,8 @@ void LeNet5_cuda::predict(int batch) {
   //      S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
   dim3 conv2GridDim(batch, 16, 1);
   dim3 conv2BlockDim(10, 10, 1); // too few threads?
-  naive_conv<<<conv2GridDim, conv2BlockDim>>>(d_S2_feature_map, d_C3_feature_map, d_conv2_weight, 
-      d_conv2_bias, batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
+  conv2<<<conv2GridDim, conv2BlockDim>>>(d_S2_feature_map, d_C3_feature_map,
+      batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
 
   // cpu_relu(C3_feature_map, batch * C3_channel * C3_size * C3_size);
   dim3 relu2GridDim(batch, 16, 1);
@@ -339,14 +378,14 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
             this->f_fc3_bias);
 
   // Alloc Model Parameters
-  cudaMalloc((void**)&d_conv1_weight,
-             sizeof(float) * conv1_in_channel * conv1_out_channel *
-                 conv1_kernel_size * conv1_kernel_size);
-  cudaMalloc((void**)&d_conv1_bias, sizeof(float) * conv1_out_channel);
-  cudaMalloc((void**)&d_conv2_weight,
-             sizeof(float) * conv2_in_channel * conv2_out_channel *
-                 conv2_kernel_size * conv2_kernel_size);
-  cudaMalloc((void**)&d_conv2_bias, sizeof(float) * conv2_out_channel);
+  // cudaMalloc((void**)&d_conv1_weight,
+  //            sizeof(float) * conv1_in_channel * conv1_out_channel *
+  //                conv1_kernel_size * conv1_kernel_size);
+  // cudaMalloc((void**)&d_conv1_bias, sizeof(float) * conv1_out_channel);
+  // cudaMalloc((void**)&d_conv2_weight,
+  //            sizeof(float) * conv2_in_channel * conv2_out_channel *
+  //                conv2_kernel_size * conv2_kernel_size);
+  // cudaMalloc((void**)&d_conv2_bias, sizeof(float) * conv2_out_channel);
   cudaMalloc((void**)&d_fc1_weight,
              sizeof(float) * fc1_in_channel * fc1_out_channel);
   cudaMalloc((void**)&d_fc1_bias, sizeof(float) * fc1_out_channel);
@@ -375,18 +414,29 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
   cudaMalloc((void**)&d_output, sizeof(float) * batch * output_size);
 
   // Copy Parameters
-  cudaMemcpy(d_conv1_weight, f_conv1_weight,
+
+  // cudaMemcpy(d_conv1_weight, f_conv1_weight,
+  //            sizeof(float) * conv1_in_channel * conv1_out_channel *
+  //                conv1_kernel_size * conv1_kernel_size,
+  //            cudaMemcpyHostToDevice);
+  // cudaMemcpy(d_conv1_bias, f_conv1_bias, sizeof(float) * conv1_out_channel,
+  //            cudaMemcpyHostToDevice);
+  // cudaMemcpy(d_conv2_weight, f_conv2_weight,
+  //            sizeof(float) * conv2_in_channel * conv2_out_channel *
+  //                conv2_kernel_size * conv2_kernel_size,
+  //            cudaMemcpyHostToDevice);
+  // cudaMemcpy(d_conv2_bias, f_conv2_bias, sizeof(float) * conv2_out_channel,
+  //            cudaMemcpyHostToDevice);
+
+  gpuErrchk(cudaMemcpyToSymbol(d_conv1_weight, f_conv1_weight,
              sizeof(float) * conv1_in_channel * conv1_out_channel *
-                 conv1_kernel_size * conv1_kernel_size,
-             cudaMemcpyHostToDevice);
-  cudaMemcpy(d_conv1_bias, f_conv1_bias, sizeof(float) * conv1_out_channel,
-             cudaMemcpyHostToDevice);
-  cudaMemcpy(d_conv2_weight, f_conv2_weight,
+                 conv1_kernel_size * conv1_kernel_size));
+  cudaMemcpyToSymbol(d_conv1_bias, f_conv1_bias, sizeof(float) * conv1_out_channel);
+  cudaMemcpyToSymbol(d_conv2_weight, f_conv2_weight,
              sizeof(float) * conv2_in_channel * conv2_out_channel *
-                 conv2_kernel_size * conv2_kernel_size,
-             cudaMemcpyHostToDevice);
-  cudaMemcpy(d_conv2_bias, f_conv2_bias, sizeof(float) * conv2_out_channel,
-             cudaMemcpyHostToDevice);
+                 conv2_kernel_size * conv2_kernel_size);
+  cudaMemcpyToSymbol(d_conv2_bias, f_conv2_bias, sizeof(float) * conv2_out_channel);
+
   cudaMemcpy(d_fc1_weight, f_fc1_weight,
              sizeof(float) * fc1_in_channel * fc1_out_channel,
              cudaMemcpyHostToDevice);
