@@ -3,6 +3,7 @@
 
 #include "LeNet5.h"
 
+// Conv params in constant memory
 __constant__ float d_conv1_weight[3*6*5*5];   // [3][6][5][5];
 __constant__ float d_conv2_weight[6*16*5*5];   // [6][16][5][5];
 __constant__ float d_conv1_bias[6];     // [6];

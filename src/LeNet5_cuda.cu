@@ -68,7 +68,7 @@ LeNet5_cuda::LeNet5_cuda(int batch) : LeNet5(batch) {
 }
 
 __global__ void conv1(float* input, float* output,
-                      int B, int H, int W, int IC, int OC,
+                      int B, const int H, const int W, const int IC, int OC,
                       int K) {
   int H_OUT = H - (K - 1); // output dimensions
   int W_OUT = W - (K - 1);
@@ -78,25 +78,38 @@ __global__ void conv1(float* input, float* output,
   int w = threadIdx.x; // col
   int h = threadIdx.y; // row
 
-  // Convolution
-  int output_index =
-      b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
-  output[output_index] = d_conv1_bias[oc];
-  for (int ic = 0; ic < IC; ic++) {
-    int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
-    int kernel_base = oc * (IC * K * K) + ic * (K * K);
-    for (int kh = 0; kh < K; kh++) {
-      for (int kw = 0; kw < K; kw++) {
-        float val = input[input_base + kh * (W) + kw] *
-                      d_conv1_weight[kernel_base + kh * (K) + kw];
-        output[output_index] += val;
+  __shared__ float X_shared[3*32*32]; // static allocation
+  // We can load the entire input into shared memory?
+  for (int channel = 0; channel < 3; channel++) {
+    X_shared[channel*(H*W) + h*(W) + w] = input[b*(IC*H*W) + channel*(H*W) + h*(W) + w];
+  }
+  __syncthreads();
+
+  if (w < W_OUT && h < H_OUT) { // more threads than output 
+    // Convolution
+    int output_index =
+        b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
+    output[output_index] = d_conv1_bias[oc];
+    for (int ic = 0; ic < IC; ic++) { // input channels
+      // int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
+      int kernel_base = oc * (IC * K * K) + ic * (K * K);
+
+      for (int kh = 0; kh < K; kh++) { // kernel height
+        for (int kw = 0; kw < K; kw++) { // kernel width
+          // float val = input[input_base + kh * (W) + kw] *
+          //               d_conv1_weight[kernel_base + kh * (K) + kw];
+          float val = X_shared[ic*(H*W) + h*(W) + w + kh*(W) + kw] *
+                        d_conv1_weight[kernel_base + kh * (K) + kw];
+          output[output_index] += val;
+        }
       }
     }
   }
 }
 
+
 __global__ void conv2(float* input, float* output,
-                      int B, int H, int W, int IC, int OC,
+                      int B, const int H, const int W, const int IC, int OC,
                       int K) {
   int H_OUT = H - (K - 1); // output dimensions
   int W_OUT = W - (K - 1);
@@ -106,18 +119,30 @@ __global__ void conv2(float* input, float* output,
   int w = threadIdx.x; // col
   int h = threadIdx.y; // row
 
-  // Convolution
-  int output_index =
-      b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
-  output[output_index] = d_conv2_bias[oc];
-  for (int ic = 0; ic < IC; ic++) {
-    int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
-    int kernel_base = oc * (IC * K * K) + ic * (K * K);
-    for (int kh = 0; kh < K; kh++) {
-      for (int kw = 0; kw < K; kw++) {
-        float val = input[input_base + kh * (W) + kw] *
-                      d_conv2_weight[kernel_base + kh * (K) + kw];
-        output[output_index] += val;
+  __shared__ float X_shared[6*14*14]; // static allocation
+  // We can load the entire input into shared memory?
+  for (int channel = 0; channel < 6; channel++) {
+    X_shared[channel*(H*W) + h*(W) + w] = input[b*(IC*H*W) + channel*(H*W) + h*(W) + w];
+  }
+  __syncthreads();
+
+  if (w < W_OUT && h < H_OUT) { // more threads than output 
+    // Convolution
+    int output_index =
+        b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
+    output[output_index] = d_conv2_bias[oc];
+    for (int ic = 0; ic < IC; ic++) { // input channels
+      // int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
+      int kernel_base = oc * (IC * K * K) + ic * (K * K);
+
+      for (int kh = 0; kh < K; kh++) { // kernel height
+        for (int kw = 0; kw < K; kw++) { // kernel width
+          // float val = input[input_base + kh * (W) + kw] *
+          //               d_conv1_weight[kernel_base + kh * (K) + kw];
+          float val = X_shared[ic*(H*W) + h*(W) + w + kh*(W) + kw] *
+                        d_conv2_weight[kernel_base + kh * (K) + kw];
+          output[output_index] += val;
+        }
       }
     }
   }
@@ -261,7 +286,7 @@ void LeNet5_cuda::predict(int batch) {
   // cpu_conv(input, C1_feature_map, conv1_weight, conv1_bias, batch, input_size,
   //      input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
   dim3 conv1GridDim(batch, 6, 1);
-  dim3 conv1BlockDim(28, 28, 1);
+  dim3 conv1BlockDim(32, 32, 1);
   conv1<<<conv1GridDim, conv1BlockDim>>>(d_input, d_C1_feature_map, batch, input_size,
                                               input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
 
@@ -284,7 +309,7 @@ void LeNet5_cuda::predict(int batch) {
   // cpu_conv(S2_feature_map, C3_feature_map, conv2_weight, conv2_bias, batch, S2_size,
   //      S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
   dim3 conv2GridDim(batch, 16, 1);
-  dim3 conv2BlockDim(10, 10, 1); // too few threads?
+  dim3 conv2BlockDim(14, 14, 1); // too few threads?
   conv2<<<conv2GridDim, conv2BlockDim>>>(d_S2_feature_map, d_C3_feature_map,
       batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
 
@@ -296,7 +321,7 @@ void LeNet5_cuda::predict(int batch) {
   // MaxPool2d
   // cpu_pool(C3_feature_map, S4_feature_map, batch, C3_channel, C3_size, C3_size);
   dim3 pool2GridDim(batch, 16, 1);
-  dim3 pool2BlockDim(5, 5, 1);
+  dim3 pool2BlockDim(5, 5, 1); // doesn't fill 32 threads per block -> underutilized
   naive_pool<<<pool2GridDim, pool2BlockDim>>>(d_C3_feature_map, d_S4_feature_map, C3_channel, C3_size, C3_size);
   // cudaMemcpy(S4_feature_map, d_S4_feature_map, sizeof(float)*batch*conv2_out_channel*S4_size*S4_size, cudaMemcpyDeviceToHost);
 
