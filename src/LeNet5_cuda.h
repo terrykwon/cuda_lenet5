@@ -70,6 +70,14 @@ private:
     // float* f_F6_layer;       // [batch][84];
     float* f_output;         // [batch][10];
 
+    // For unrolled convolution
+    float* d_input_unrolled;
+    float* d_conv1_weight_unrolled;
+    float* d_conv1_bias_unrolled; // is this necessary?
+    float* d_S2_feature_map_unrolled;
+    float* d_conv2_weight_unrolled;
+    float* d_conv2_bias_unrolled;
+
     // Functions
     // __global__ void normalize(int batch, int input_channel, int input_size, const uint8_t* const d_image, float* d_input);
 

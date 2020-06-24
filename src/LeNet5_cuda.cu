@@ -1,39 +1,6 @@
 #include "LeNet5_cuda.h"
 
 
-/**
- * Tiled matrix multiplication code from textbook
- */
-// __global__
-// void MatrixMulKernel(float* d_M, float* d_N, float* d_P, int Width) {
-//   __shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
-//   __shared__ float Nds[TILE_WIDTH][TILE_WIDTH];
-
-//   int bx = blockIdx.x;
-//   int by = blockIdx.y;
-//   int tx = threadIdx.x;
-//   int ty = threadIdx.y;
-
-//   int Row = by * TILE_WIDTH + ty;
-//   int Col = bx * TILE_WIDTH + tx;
-
-//   float Pvalue = 0;
-
-//   for (int ph = 0; ph < Width/TILE_WIDTH; ++ph) {
-//     // collaborative loading of d_M and d_N tiles into shared memory
-//     // important! should understand
-//     Mds[ty][tx] = d_M[Row*Width + ph*TILE_WIDTH * tx];
-//     Nds[ty][tx] = d_N[(ph*TILE_WIDTH + ty)*Width + Col];
-//     __syncthreads();
-
-//     for (int k = 0; k < TILE_WIDTH; k++) {
-//       Pvalue += Mds[ty][k] * Nds[k][tx];
-//     }
-//     __syncthreads(); // why?
-//   }
-//   d_P[Row*Width + Col] = Pvalue;
-// }
-
 
 /**
  * Wrapper to catch CUDA errors.
@@ -65,6 +32,142 @@ LeNet5_cuda::LeNet5_cuda(int batch) : LeNet5(batch) {
 
   // Activation
   this->f_output = new float[batch * output_size];
+}
+
+/**
+ * Each threadblock computes a 2D block of output matrix.
+ */
+//  #define TILE_WIDTH 32;
+// __global__ void matmul(float* A, float* B, float* C, int M, int N, int K) {
+//   // for (int i = 0; i < m; i++) {
+//   //   for (int j = 0; j < n; j++) {
+//   //     for (int p = 0; p < k; p++) {
+//   //       C[m*i + j] += A[m*i + k] * B[m*k + j];
+//   //     }
+//   //   }
+//   // }
+
+//   __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
+//   __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
+
+//   int bx = blockIdx.x;
+//   int by = blockIdx.y;
+//   int tx = threadIdx.x;
+//   int ty = threadIdx.y;
+
+//   int r = by*TILE_WIDTH + ty; // row of C
+//   int c = bx*TILE_WIDTH + tx;
+//   float val = 0.0f;
+
+//   for (int i = 0; i < M / TILE_WIDTH; i++) {
+//     // load subTiles. make sure this is coalesced.
+//   }
+
+// }
+
+/**
+ * Each thread writes a (K*K) partial column.
+ * Writing by columns is good b/c coalesces over rows.
+ *
+ * output: (C * K * K) x (H * W)
+ */
+__global__ void im2col(float* X, float* X_unrolled, int IC, int H, int W, int K) {
+  int H_OUT = H - (K - 1); // output dimensions
+  int W_OUT = W - (K - 1);
+
+  int b = blockIdx.x;
+  int t = blockIdx.y * 1024 + threadIdx.x;
+  int W_prime = H_OUT * W_OUT;
+  int H_prime = IC * K * K;
+
+  if (t < IC*W_prime) { // each thread will update one channel of one column
+    int ic = t / W_prime; // channel = row block
+    int s = t % W_prime; // column
+
+    int h_out = s / W_OUT; // original output row
+    int w_out = s % W_OUT; // original output column
+
+    int w_unroll = h_out * W_OUT + w_out; // index of 
+    int h_base = ic * K * K; // starting row of unrolled
+
+    for (int p = 0; p < K; p++) {
+      for (int q = 0; q < K; q++) {
+        int h_unroll = h_base + p*K + q;
+
+        int in_idx = b*(IC*H*W) + ic*(H*W) + (h_out+p)*(W) + (w_out+q);
+        int out_idx = b*(H_prime*W_prime) + h_unroll*(W_prime) + w_unroll;
+
+        // printf("b=%d t=%d ic=%d h_out=%d w_out=%d h_unroll=%d w_unroll=%d out_idx=%d\n", 
+        //     b, t, ic, h_out, w_out, h_unroll, w_unroll, out_idx);
+
+        X_unrolled[out_idx] = X[in_idx];
+        // X_unrolled[out_idx] = 1.0f;
+      }
+    }
+  }
+}
+
+/**
+ * This can be called in prepare() since it is just reordering
+ * (IC x OC x K x K) to (OC x IC x K x K).
+ */
+void reorder_filters(double* F, float* F_col, int IC, int OC, int K) {
+  for (int ic = 0; ic < IC; ic++) {
+    for (int oc = 0; oc < OC; oc++) {
+      for (int i = 0; i < K; i++) {
+        for (int j = 0; j < K; j++) {
+          F_col[oc*(IC*K*K) + ic*(K*K) + i*(K) + j] = float(F[ic*(OC*K*K) + oc*(K*K) + i*(K) + j]);
+        }
+      }
+    }
+  }
+}
+
+
+void unrolled_conv(float* X, float* X_unrolled, float* Y, float* weight, float* bias, 
+    const int B, const int H, const int W, const int IC, const int OC, int K) {
+
+  int H_OUT = H - (K - 1); // output dimensions
+  int W_OUT = W - (K - 1);
+
+  int total_threads = IC * H_OUT * W_OUT;
+  dim3 unrollGridDim(B, ceil(total_threads / 1024), 1);
+  dim3 unrollBlockDim(1024, 1, 1);
+  im2col<<<unrollGridDim, unrollBlockDim>>>(X, X_unrolled, IC, H, W, K);
+
+  // dim3 matmulGridDim();
+  // dim3 matmulBlockDim();
+  // naive_matmul_1(f_conv1_weight, X_unrolled, Y);
+}
+
+void unrolled_conv_1(float* X, float* X_unrolled, float* Y, 
+    const int B, const int H, const int W, const int IC, const int OC, int K) {
+
+  int H_OUT = H - (K - 1); // output dimensions
+  int W_OUT = W - (K - 1);
+
+  int total_threads = IC * H_OUT * W_OUT;
+  dim3 unrollGridDim(B, ceil(total_threads / 1024), 1);
+  dim3 unrollBlockDim(1024, 1, 1);
+  im2col<<<unrollGridDim, unrollBlockDim>>>(X, X_unrolled, IC, H, W, K);
+
+  dim3 matmulGridDim();
+  dim3 matmulBlockDim();
+  // naive_matmul_1(f_conv1_weight, X_unrolled, Y);
+}
+
+void unrolled_conv_2(float* X, float* X_unrolled, float* Y, 
+    const int B, const int H, const int W, const int IC, const int OC, int K) {
+
+  int H_OUT = H - (K - 1); // output dimensions
+  int W_OUT = W - (K - 1);
+
+  int total_threads = IC * H_OUT * W_OUT;
+  dim3 unrollGridDim(B, ceil(total_threads / 1024), 1);
+  dim3 unrollBlockDim(1024, 1, 1);
+  im2col<<<unrollGridDim, unrollBlockDim>>>(X, X_unrolled, IC, H, W, K);
+
+  // naive_matmul(X_unrolled, Y);
 }
 
 __global__ void conv1(float* input, float* output,
@@ -285,6 +388,9 @@ void LeNet5_cuda::predict(int batch) {
   // Conv2d
   // cpu_conv(input, C1_feature_map, conv1_weight, conv1_bias, batch, input_size,
   //      input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
+  unrolled_conv(d_input, d_input_unrolled, d_C1_feature_map, d_conv1_weight, d_conv1_bias,
+      batch, input_size, input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
+
   dim3 conv1GridDim(batch, 6, 1);
   dim3 conv1BlockDim(32, 32, 1);
   conv1<<<conv1GridDim, conv1BlockDim>>>(d_input, d_C1_feature_map, batch, input_size,
@@ -308,6 +414,10 @@ void LeNet5_cuda::predict(int batch) {
   // Conv2d
   // cpu_conv(S2_feature_map, C3_feature_map, conv2_weight, conv2_bias, batch, S2_size,
   //      S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
+
+  unrolled_conv(d_S2_feature_map, d_S2_feature_map_unrolled, d_C3_feature_map, d_conv2_weight, d_conv2_bias,
+      batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
+
   dim3 conv2GridDim(batch, 16, 1);
   dim3 conv2BlockDim(14, 14, 1); // too few threads?
   conv2<<<conv2GridDim, conv2BlockDim>>>(d_S2_feature_map, d_C3_feature_map,
@@ -369,17 +479,22 @@ void LeNet5_cuda::predict(int batch) {
 }
 
 void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
-  // Store all double arrays as floats...
-  // std::cout << "Copying as floats" << std::endl;
-  std::copy(this->conv1_weight, 
-            this->conv1_weight+conv1_in_channel*conv1_out_channel*conv1_kernel_size*conv1_kernel_size,
-            this->f_conv1_weight);
+  // Store all double arrays as floats
+  // Note: this was done here instead of loading everything as floats in LeNet5.cpp
+  // in order to provide accuracy comparisons to the double CPU version.
+  // No additional computations are performed.
+
+  // std::copy(this->conv1_weight, 
+  //           this->conv1_weight+conv1_in_channel*conv1_out_channel*conv1_kernel_size*conv1_kernel_size,
+  //           this->f_conv1_weight);
+  reorder_filters(this->conv1_weight, this->f_conv1_weight, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
   std::copy(this->conv1_bias,
             this->conv1_bias+conv1_out_channel,
             this->f_conv1_bias);
-  std::copy(this->conv2_weight,
-            this->conv2_weight+conv2_in_channel*conv2_out_channel*conv2_kernel_size*conv2_kernel_size,
-            this->f_conv2_weight);
+  // std::copy(this->conv2_weight,
+  //           this->conv2_weight+conv2_in_channel*conv2_out_channel*conv2_kernel_size*conv2_kernel_size,
+  //           this->f_conv2_weight);
+  reorder_filters(this->conv2_weight, this->f_conv2_weight, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
   std::copy(this->conv2_bias,
             this->conv2_bias+conv2_out_channel,
             this->f_conv2_bias);
@@ -401,6 +516,20 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
   std::copy(this->fc3_bias,
             this->fc3_bias+fc3_out_channel,
             this->f_fc3_bias);
+
+  // For unrolled convolution
+  cudaMalloc((void**)&d_input_unrolled, sizeof(float)*
+      batch * conv1_in_channel*conv1_kernel_size*conv1_kernel_size * C1_size*C1_size);
+  cudaMalloc((void**)&d_conv1_weight_unrolled, sizeof(float)*
+      conv1_out_channel*conv1_kernel_size*conv1_kernel_size);
+  // d_conv1_bias_unrolled; // for now just add scalar
+  // cudaMalloc((void**)d_S2_feature_map_unrolled;
+  // d_conv2_weight_unrolled;
+  // d_conv2_bias_unrolled;
+  cudaMalloc((void**)&d_S2_feature_map_unrolled, sizeof(float)*
+      batch * conv2_in_channel*conv2_kernel_size*conv2_kernel_size * S2_size*S2_size);
+  cudaMalloc((void**)&d_conv2_weight_unrolled, sizeof(float)*
+      conv2_out_channel*conv2_kernel_size*conv2_kernel_size);
 
   // Alloc Model Parameters
   // cudaMalloc((void**)&d_conv1_weight,
@@ -440,22 +569,9 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
 
   // Copy Parameters
 
-  // cudaMemcpy(d_conv1_weight, f_conv1_weight,
-  //            sizeof(float) * conv1_in_channel * conv1_out_channel *
-  //                conv1_kernel_size * conv1_kernel_size,
-  //            cudaMemcpyHostToDevice);
-  // cudaMemcpy(d_conv1_bias, f_conv1_bias, sizeof(float) * conv1_out_channel,
-  //            cudaMemcpyHostToDevice);
-  // cudaMemcpy(d_conv2_weight, f_conv2_weight,
-  //            sizeof(float) * conv2_in_channel * conv2_out_channel *
-  //                conv2_kernel_size * conv2_kernel_size,
-  //            cudaMemcpyHostToDevice);
-  // cudaMemcpy(d_conv2_bias, f_conv2_bias, sizeof(float) * conv2_out_channel,
-  //            cudaMemcpyHostToDevice);
-
-  gpuErrchk(cudaMemcpyToSymbol(d_conv1_weight, f_conv1_weight,
+  cudaMemcpyToSymbol(d_conv1_weight, f_conv1_weight,
              sizeof(float) * conv1_in_channel * conv1_out_channel *
-                 conv1_kernel_size * conv1_kernel_size));
+                 conv1_kernel_size * conv1_kernel_size);
   cudaMemcpyToSymbol(d_conv1_bias, f_conv1_bias, sizeof(float) * conv1_out_channel);
   cudaMemcpyToSymbol(d_conv2_weight, f_conv2_weight,
              sizeof(float) * conv2_in_channel * conv2_out_channel *
@@ -477,6 +593,7 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
              cudaMemcpyHostToDevice);
   cudaMemcpy(d_fc3_bias, f_fc3_bias, sizeof(float) * fc3_out_channel,
              cudaMemcpyHostToDevice);
+
   // copy input image
   size_t image_size = batch * input_size * input_size * input_channel;
   cudaMemcpy(d_image, image, image_size * sizeof(uint8_t),
@@ -539,6 +656,14 @@ LeNet5_cuda::~LeNet5_cuda() {
   // delete[] this->f_C5_layer;
   // delete[] this->f_F6_layer;
   delete[] this->f_output;
+
+  // free unrolled
+  cudaFree(d_input_unrolled);
+  cudaFree(d_conv1_weight_unrolled);
+  // float* d_conv1_bias_unrolled; // is this necessary?
+  cudaFree(d_S2_feature_map_unrolled);
+  cudaFree(d_conv2_weight_unrolled);
+  // float* d_conv2_bias_unrolled;
 }
 
 
