@@ -162,7 +162,9 @@ __global__ void conv1(float* input, float* output,
     // Convolution
     int output_index =
         b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
-    output[output_index] = d_conv1_bias[oc];
+    // output[output_index] = d_conv1_bias[oc];
+    float val = d_conv1_bias[oc];
+
     for (int ic = 0; ic < IC; ic++) { // input channels
       // int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
       int kernel_base = oc * (IC * K * K) + ic * (K * K);
@@ -171,12 +173,12 @@ __global__ void conv1(float* input, float* output,
         for (int kw = 0; kw < K; kw++) { // kernel width
           // float val = input[input_base + kh * (W) + kw] *
           //               d_conv1_weight[kernel_base + kh * (K) + kw];
-          float val = X_shared[ic*(H*W) + h*(W) + w + kh*(W) + kw] *
+          val += X_shared[ic*(H*W) + h*(W) + w + kh*(W) + kw] *
                         d_conv1_weight[kernel_base + kh * (K) + kw];
-          output[output_index] += val;
         }
       }
     }
+    output[output_index] = val;
   }
 }
 
@@ -203,7 +205,8 @@ __global__ void conv2(float* input, float* output,
     // Convolution
     int output_index =
         b * (OC * H_OUT * W_OUT) + oc * (H_OUT * W_OUT) + h * W_OUT + w;
-    output[output_index] = d_conv2_bias[oc];
+    // output[output_index] = d_conv2_bias[oc];
+    float val = d_conv2_bias[oc];
     for (int ic = 0; ic < IC; ic++) { // input channels
       // int input_base = b * (IC * H * W) + ic * (H * W) + h * (W) + w;
       int kernel_base = oc * (IC * K * K) + ic * (K * K);
@@ -212,12 +215,12 @@ __global__ void conv2(float* input, float* output,
         for (int kw = 0; kw < K; kw++) { // kernel width
           // float val = input[input_base + kh * (W) + kw] *
           //               d_conv1_weight[kernel_base + kh * (K) + kw];
-          float val = X_shared[ic*(H*W) + h*(W) + w + kh*(W) + kw] *
+          val += X_shared[ic*(H*W) + h*(W) + w + kh*(W) + kw] *
                         d_conv2_weight[kernel_base + kh * (K) + kw];
-          output[output_index] += val;
         }
       }
     }
+    output[output_index] = val;
   }
 }
 
@@ -296,7 +299,6 @@ __global__ void naive_relu(float* feature_map, int channels, int width, int heig
 
 /**
  * (batch_size, in_channels, 1) x (width, height, 1)
- * This is actually much slower than the CPU version.
  */
 __global__ void naive_pool(float* input, float* output, int C, int H, int W) {
   int scale = 2;
@@ -319,8 +321,6 @@ __global__ void naive_pool(float* input, float* output, int C, int H, int W) {
       float val = input[input_base + sh * (W) + sw];
       if (val > max_val) {
         max_val = val;
-        // max_sh = sh;
-        // max_sw = sw;
       }
     }
   }
@@ -370,12 +370,14 @@ __global__ void fc_rowblock(float* input, float* output, float* weight, float* b
 
   if (t < block_length) { // calculate one output element of y
     float val = bias[block*block_length + t];
+
+    #pragma unroll
     for (int ic = 0; ic < IC; ic++) {
       val += shmem[t*IC + ic] * input[batch * IC + ic];
     }
     output[batch*OC + block*block_length + t] = val;
   }
-  __syncthreads();
+  // __syncthreads();
 }
 
 void LeNet5_cuda::predict(int batch) {
@@ -440,7 +442,7 @@ void LeNet5_cuda::predict(int batch) {
   // Linear
   // cpu_fc(S4_feature_map, C5_layer, fc1_weight, fc1_bias, batch, fc1_in_channel,
   //    fc1_out_channel);
-  int fc1RowblockNum = 4;
+  int fc1RowblockNum = 6;
   dim3 fc1GridDim(batch, fc1RowblockNum, 1);
   dim3 fc1BlockDim(512, 1, 1);
   fc_rowblock<<<fc1GridDim, fc1BlockDim, sizeof(float)*fc1_in_channel*(fc1_out_channel/fc1RowblockNum)>>>
@@ -470,10 +472,12 @@ void LeNet5_cuda::predict(int batch) {
   // Linear
   // cpu_fc(F6_layer, output, fc3_weight, fc3_bias, batch, fc3_in_channel,
   //    fc3_out_channel);
-  dim3 fc3GridDim(batch, 1, 1);
-  dim3 fc3BlockDim(10, 1, 1);
-  naive_fc<<<fc3GridDim, fc3BlockDim>>>(d_F6_layer, d_output, d_fc3_weight, d_fc3_bias, 
-      fc3_in_channel, fc3_out_channel);
+  int fc3RowblockNum = 1;
+  dim3 fc3GridDim(batch, fc3RowblockNum, 1);
+  dim3 fc3BlockDim(128, 1, 1);
+  fc_rowblock<<<fc3GridDim, fc3BlockDim, sizeof(float)*fc3_in_channel*(fc3_out_channel/fc3RowblockNum)>>>
+          (d_F6_layer, d_output, d_fc3_weight, d_fc3_bias, 
+      fc3_in_channel, fc3_out_channel, fc3RowblockNum);
 
   // dest, source, number of bytes, transfer type
   // cudaMemcpy(d_output, output, sizeof(float)*batch*output_size, cudaMemcpyHostToDevice);
@@ -524,18 +528,18 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
             this->f_fc3_bias);
 
   // For unrolled convolution
-  cudaMalloc((void**)&d_input_unrolled, sizeof(float)*
-      batch * conv1_in_channel*conv1_kernel_size*conv1_kernel_size * C1_size*C1_size);
-  cudaMalloc((void**)&d_conv1_weight_unrolled, sizeof(float)*
-      conv1_out_channel*conv1_kernel_size*conv1_kernel_size);
+  // cudaMalloc((void**)&d_input_unrolled, sizeof(float)*
+  //     batch * conv1_in_channel*conv1_kernel_size*conv1_kernel_size * C1_size*C1_size);
+  // cudaMalloc((void**)&d_conv1_weight_unrolled, sizeof(float)*
+  //     conv1_out_channel*conv1_kernel_size*conv1_kernel_size);
   // d_conv1_bias_unrolled; // for now just add scalar
   // cudaMalloc((void**)d_S2_feature_map_unrolled;
   // d_conv2_weight_unrolled;
   // d_conv2_bias_unrolled;
-  cudaMalloc((void**)&d_S2_feature_map_unrolled, sizeof(float)*
-      batch * conv2_in_channel*conv2_kernel_size*conv2_kernel_size * S2_size*S2_size);
-  cudaMalloc((void**)&d_conv2_weight_unrolled, sizeof(float)*
-      conv2_out_channel*conv2_kernel_size*conv2_kernel_size);
+  // cudaMalloc((void**)&d_S2_feature_map_unrolled, sizeof(float)*
+  //     batch * conv2_in_channel*conv2_kernel_size*conv2_kernel_size * S2_size*S2_size);
+  // cudaMalloc((void**)&d_conv2_weight_unrolled, sizeof(float)*
+  //     conv2_out_channel*conv2_kernel_size*conv2_kernel_size);
 
   // Alloc Model Parameters
   // cudaMalloc((void**)&d_conv1_weight,
@@ -574,7 +578,6 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
   cudaMalloc((void**)&d_output, sizeof(float) * batch * output_size);
 
   // Copy Parameters
-
   cudaMemcpyToSymbol(d_conv1_weight, f_conv1_weight,
              sizeof(float) * conv1_in_channel * conv1_out_channel *
                  conv1_kernel_size * conv1_kernel_size);

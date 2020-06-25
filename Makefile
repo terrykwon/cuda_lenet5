@@ -4,7 +4,7 @@
 NVCC=/usr/local/cuda-10.2/bin/nvcc
 BUILD=build
 SRC=src
-FLAGS=-std=c++11 -O3 $(shell pkg-config --cflags opencv4) --compiler-options -Wall
+FLAGS=-std=c++11 -O3 $(shell pkg-config --cflags opencv4) -use_fast_math --compiler-options -Wall
 LIBS=$(shell pkg-config --libs opencv4)
 
 #########################
