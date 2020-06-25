@@ -34,36 +34,6 @@ LeNet5_cuda::LeNet5_cuda(int batch) : LeNet5(batch) {
   this->f_output = new float[batch * output_size];
 }
 
-/**
- * Each threadblock computes a 2D block of output matrix.
- */
-//  #define TILE_WIDTH 32;
-// __global__ void matmul(float* A, float* B, float* C, int M, int N, int K) {
-//   // for (int i = 0; i < m; i++) {
-//   //   for (int j = 0; j < n; j++) {
-//   //     for (int p = 0; p < k; p++) {
-//   //       C[m*i + j] += A[m*i + k] * B[m*k + j];
-//   //     }
-//   //   }
-//   // }
-
-//   __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
-//   __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
-
-//   int bx = blockIdx.x;
-//   int by = blockIdx.y;
-//   int tx = threadIdx.x;
-//   int ty = threadIdx.y;
-
-//   int r = by*TILE_WIDTH + ty; // row of C
-//   int c = bx*TILE_WIDTH + tx;
-//   float val = 0.0f;
-
-//   for (int i = 0; i < M / TILE_WIDTH; i++) {
-//     // load subTiles. make sure this is coalesced.
-//   }
-
-// }
 
 /**
  * Each thread writes a (K*K) partial column.
@@ -369,9 +339,12 @@ __global__ void naive_fc(float* input, float* output, float* weight, float* bias
   int b = blockIdx.x;
   int oc = threadIdx.x; 
 
-  output[b * OC + oc] = bias[oc];
+  // output[b * OC + oc] = bias[oc];
+  float val = bias[oc];
   for (int ic = 0; ic < IC; ic++)
-    output[b * OC + oc] += weight[oc * IC + ic] * input[b * IC + ic];
+    val += weight[oc * IC + ic] * input[b * IC + ic];
+
+  output[b*OC + oc] = val;
 }
 
 void LeNet5_cuda::predict(int batch) {
@@ -388,8 +361,8 @@ void LeNet5_cuda::predict(int batch) {
   // Conv2d
   // cpu_conv(input, C1_feature_map, conv1_weight, conv1_bias, batch, input_size,
   //      input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
-  unrolled_conv(d_input, d_input_unrolled, d_C1_feature_map, d_conv1_weight, d_conv1_bias,
-      batch, input_size, input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
+  // unrolled_conv(d_input, d_input_unrolled, d_C1_feature_map, d_conv1_weight, d_conv1_bias,
+  //     batch, input_size, input_size, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
 
   dim3 conv1GridDim(batch, 6, 1);
   dim3 conv1BlockDim(32, 32, 1);
@@ -415,8 +388,8 @@ void LeNet5_cuda::predict(int batch) {
   // cpu_conv(S2_feature_map, C3_feature_map, conv2_weight, conv2_bias, batch, S2_size,
   //      S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
 
-  unrolled_conv(d_S2_feature_map, d_S2_feature_map_unrolled, d_C3_feature_map, d_conv2_weight, d_conv2_bias,
-      batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
+  // unrolled_conv(d_S2_feature_map, d_S2_feature_map_unrolled, d_C3_feature_map, d_conv2_weight, d_conv2_bias,
+  //     batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
 
   dim3 conv2GridDim(batch, 16, 1);
   dim3 conv2BlockDim(14, 14, 1); // too few threads?
@@ -484,17 +457,17 @@ void LeNet5_cuda::prepare_device_memory(uint8_t* image) {
   // in order to provide accuracy comparisons to the double CPU version.
   // No additional computations are performed.
 
-  // std::copy(this->conv1_weight, 
-  //           this->conv1_weight+conv1_in_channel*conv1_out_channel*conv1_kernel_size*conv1_kernel_size,
-  //           this->f_conv1_weight);
-  reorder_filters(this->conv1_weight, this->f_conv1_weight, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
+  std::copy(this->conv1_weight, 
+            this->conv1_weight+conv1_in_channel*conv1_out_channel*conv1_kernel_size*conv1_kernel_size,
+            this->f_conv1_weight);
+  // reorder_filters(this->conv1_weight, this->f_conv1_weight, conv1_in_channel, conv1_out_channel, conv1_kernel_size);
   std::copy(this->conv1_bias,
             this->conv1_bias+conv1_out_channel,
             this->f_conv1_bias);
-  // std::copy(this->conv2_weight,
-  //           this->conv2_weight+conv2_in_channel*conv2_out_channel*conv2_kernel_size*conv2_kernel_size,
-  //           this->f_conv2_weight);
-  reorder_filters(this->conv2_weight, this->f_conv2_weight, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
+  std::copy(this->conv2_weight,
+            this->conv2_weight+conv2_in_channel*conv2_out_channel*conv2_kernel_size*conv2_kernel_size,
+            this->f_conv2_weight);
+  // reorder_filters(this->conv2_weight, this->f_conv2_weight, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
   std::copy(this->conv2_bias,
             this->conv2_bias+conv2_out_channel,
             this->f_conv2_bias);
