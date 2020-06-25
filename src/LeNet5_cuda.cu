@@ -423,7 +423,7 @@ void LeNet5_cuda::predict(int batch) {
   //     batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
 
   dim3 conv2GridDim(batch, 16, 1);
-  dim3 conv2BlockDim(14, 14, 1); // too few threads?
+  dim3 conv2BlockDim(16, 16, 1); // too few threads?
   conv2<<<conv2GridDim, conv2BlockDim>>>(d_S2_feature_map, d_C3_feature_map,
       batch, S2_size, S2_size, conv2_in_channel, conv2_out_channel, conv2_kernel_size);
 
@@ -444,7 +444,7 @@ void LeNet5_cuda::predict(int batch) {
   //    fc1_out_channel);
   int fc1RowblockNum = 6;
   dim3 fc1GridDim(batch, fc1RowblockNum, 1);
-  dim3 fc1BlockDim(512, 1, 1);
+  dim3 fc1BlockDim(432, 1, 1);
   fc_rowblock<<<fc1GridDim, fc1BlockDim, sizeof(float)*fc1_in_channel*(fc1_out_channel/fc1RowblockNum)>>>
           (d_S4_feature_map, d_C5_layer, d_fc1_weight, d_fc1_bias, 
       fc1_in_channel, fc1_out_channel, fc1RowblockNum);
@@ -457,7 +457,9 @@ void LeNet5_cuda::predict(int batch) {
   // Linear
   // cpu_fc(C5_layer, F6_layer, fc2_weight, fc2_bias, batch, fc2_in_channel,
   //    fc2_out_channel);
-  int fc2RowblockNum = 7;
+  int fc2RowblockNum;
+  if (batch == 1) fc2RowblockNum = 12;
+  else fc2RowblockNum = 1;
   dim3 fc2GridDim(batch, fc2RowblockNum, 1);
   dim3 fc2BlockDim(128, 1, 1);
   fc_rowblock<<<fc2GridDim, fc2BlockDim, sizeof(float)*fc2_in_channel*(fc2_out_channel/fc2RowblockNum)>>>
@@ -472,7 +474,9 @@ void LeNet5_cuda::predict(int batch) {
   // Linear
   // cpu_fc(F6_layer, output, fc3_weight, fc3_bias, batch, fc3_in_channel,
   //    fc3_out_channel);
-  int fc3RowblockNum = 1;
+  int fc3RowblockNum;
+  if (batch == 1) fc3RowblockNum = 10;
+  else fc3RowblockNum = 1;
   dim3 fc3GridDim(batch, fc3RowblockNum, 1);
   dim3 fc3BlockDim(128, 1, 1);
   fc_rowblock<<<fc3GridDim, fc3BlockDim, sizeof(float)*fc3_in_channel*(fc3_out_channel/fc3RowblockNum)>>>

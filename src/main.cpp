@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
   // Initialize arguments
   std::string input_path = "/nfs/data/cifar10/test_batch.bin";
   int data_offset = 0;
-  int batch = 128; // TODO: change back to 1
+  int batch = 1; // TODO: change back to 1
   std::string img_path_template = "tmp/cifar10_test_%d_%s.bmp";
   std::string parameter_path = "model/values.txt";
   // Read arguments
