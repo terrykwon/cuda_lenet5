@@ -347,9 +347,38 @@ __global__ void naive_fc(float* input, float* output, float* weight, float* bias
   output[b*OC + oc] = val;
 }
 
-void LeNet5_cuda::predict(int batch) {
-  std::cout << "batch " << batch << std::endl;
+/**
+ * (batch, num_rowblocks, 1) x (output_nodes, 1, 1)
+ */
+__global__ void fc_rowblock(float* input, float* output, float* weight, float* bias,
+                         int IC, int OC, int num_rowblocks) {
+  int batch = blockIdx.x;
+  int block = blockIdx.y;
+  int t = threadIdx.x; 
 
+  int block_length = OC / num_rowblocks; // assume divisible
+  int row_start = block * IC * block_length;
+
+  extern __shared__ float shmem[]; // stores one complete row block of W
+
+  if (t < IC) {
+    for (int r = 0; r < block_length; r++) {
+      shmem[r*IC + t] = weight[row_start + r*IC + t];
+    }
+  }
+  __syncthreads();
+
+  if (t < block_length) { // calculate one output element of y
+    float val = bias[block*block_length + t];
+    for (int ic = 0; ic < IC; ic++) {
+      val += shmem[t*IC + ic] * input[batch * IC + ic];
+    }
+    output[batch*OC + block*block_length + t] = val;
+  }
+  __syncthreads();
+}
+
+void LeNet5_cuda::predict(int batch) {
   // cpu_normalize(image, input);
   dim3 normGridDim(batch, 3, 1);
   dim3 normBlockDim(32, 32, 1);
@@ -411,10 +440,12 @@ void LeNet5_cuda::predict(int batch) {
   // Linear
   // cpu_fc(S4_feature_map, C5_layer, fc1_weight, fc1_bias, batch, fc1_in_channel,
   //    fc1_out_channel);
-  dim3 fc1GridDim(batch, 1, 1);
-  dim3 fc1BlockDim(120, 1, 1);
-  naive_fc<<<fc1GridDim, fc1BlockDim>>>(d_S4_feature_map, d_C5_layer, d_fc1_weight, d_fc1_bias, 
-      fc1_in_channel, fc1_out_channel);
+  int fc1RowblockNum = 4;
+  dim3 fc1GridDim(batch, fc1RowblockNum, 1);
+  dim3 fc1BlockDim(512, 1, 1);
+  fc_rowblock<<<fc1GridDim, fc1BlockDim, sizeof(float)*fc1_in_channel*(fc1_out_channel/fc1RowblockNum)>>>
+          (d_S4_feature_map, d_C5_layer, d_fc1_weight, d_fc1_bias, 
+      fc1_in_channel, fc1_out_channel, fc1RowblockNum);
 
   // cpu_relu(C5_layer, batch * C5_size);
   dim3 relu3GridDim(batch, 1, 1);
@@ -424,10 +455,12 @@ void LeNet5_cuda::predict(int batch) {
   // Linear
   // cpu_fc(C5_layer, F6_layer, fc2_weight, fc2_bias, batch, fc2_in_channel,
   //    fc2_out_channel);
-  dim3 fc2GridDim(batch, 1, 1);
-  dim3 fc2BlockDim(84, 1, 1);
-  naive_fc<<<fc2GridDim, fc2BlockDim>>>(d_C5_layer, d_F6_layer, d_fc2_weight, d_fc2_bias, 
-      fc2_in_channel, fc2_out_channel);
+  int fc2RowblockNum = 7;
+  dim3 fc2GridDim(batch, fc2RowblockNum, 1);
+  dim3 fc2BlockDim(128, 1, 1);
+  fc_rowblock<<<fc2GridDim, fc2BlockDim, sizeof(float)*fc2_in_channel*(fc2_out_channel/fc2RowblockNum)>>>
+          (d_C5_layer, d_F6_layer, d_fc2_weight, d_fc2_bias, 
+      fc2_in_channel, fc2_out_channel, fc2RowblockNum);
 
   // cpu_relu(F6_layer, batch * F6_size);
   dim3 relu4GridDim(batch, 1, 1);
